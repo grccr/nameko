@@ -42,10 +42,10 @@ class Reader(object):
 
     def __call__(self):
         while True:
-            raw_req = ws.wait()
+            raw_req = self.ws.wait()
             if raw_req is None:
                 break
-            queue.put(QueueMessage(raw_req, 'request'))
+            self.queue.put(QueueMessage(raw_req, 'request'))
 
 
 class PoolDispatcher(object):
@@ -58,7 +58,7 @@ class PoolDispatcher(object):
         self.queue.put(QueueMessage(self.request_dispatcher(msg), 'response'))
 
     def dispatch(self, msg):
-        pool.spawn(self._exec, msg)
+        self.pool.spawn(self._exec, msg)
 
 
 class WebSocketServer(SharedExtension, ProviderCollector):
@@ -105,7 +105,7 @@ class WebSocketServer(SharedExtension, ProviderCollector):
             dispatch_func = partial(self.handle_websocket_request,
                                socket_id,
                                context_data)
-            dispatcher = PoolDispatcher(dispatch_func)
+            dispatcher = PoolDispatcher(queue, dispatch_func)
             try:
                 ws.send(self.serialize_event(
                     'connected', {'socket_id': socket_id})
