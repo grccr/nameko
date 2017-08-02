@@ -5,6 +5,9 @@ from functools import partial
 from logging import getLogger
 
 from eventlet.event import Event
+from eventlet.queue import Queue
+from eventlet import spawn
+from eventlet.greenpool import GreenPool
 from eventlet.websocket import WebSocketWSGI
 from nameko.exceptions import (
     ConnectionNotFound, MalformedRequest, MethodNotFound, serialize)
@@ -26,6 +29,36 @@ class Connection(object):
         self.socket_id = socket_id
         self.context_data = context_data
         self.subscriptions = set()
+
+
+QueueMessage = namedtuple('QueueMessage', ['data', 'type'])
+
+
+class Reader(object):
+
+    def __init__(self, ws, queue):
+        self.ws = ws
+        self.queue = queue
+
+    def __call__(self):
+        while True:
+            raw_req = ws.wait()
+            if raw_req is None:
+                break
+            queue.put(QueueMessage(raw_req, 'request'))
+
+
+class PoolDispatcher(object):
+    def __init__(self, queue, request_dispatcher, pool_size=10):
+        self.pool = GreenPool(pool_size)
+        self.request_dispatcher = request_dispatcher
+        self.queue = queue
+
+    def _exec(self, msg):
+        self.queue.put(QueueMessage(self.request_dispatcher(msg), 'response'))
+
+    def dispatch(self, msg):
+        pool.spawn(self._exec, msg)
 
 
 class WebSocketServer(SharedExtension, ProviderCollector):
@@ -67,19 +100,29 @@ class WebSocketServer(SharedExtension, ProviderCollector):
         def handler(ws):
             socket_id, context_data = self.add_websocket(
                 ws, initial_context_data)
+            queue = Queue()
+            reader = spawn(Reader(ws, queue))
+            dispatch_func = partial(self.handle_websocket_request,
+                               socket_id,
+                               context_data)
+            dispatcher = PoolDispatcher(dispatch_func)
             try:
                 ws.send(self.serialize_event(
                     'connected', {'socket_id': socket_id})
                 )
-
-                while 1:
-                    raw_req = ws.wait()
-                    if raw_req is None:
+                while True:
+                    msg = queue.get()
+                    if msg is None:
                         break
-                    ws.send(self.handle_websocket_request(
-                        socket_id, context_data, raw_req))
+                    elif msg.type == 'response':
+                        ws.send(msg.data)
+                    elif msg.type == 'request':
+                        dispatcher.dispatch(msg.data)
+                    # ws.send(self.handle_websocket_request(
+                    #     socket_id, context_data, raw_req))
             finally:
                 self.remove_socket(socket_id)
+                reader.kill()
         return WebSocketWSGI(handler)
 
     def handle_websocket_request(self, socket_id, context_data, raw_req):
