@@ -44,6 +44,7 @@ class Reader(object):
         while True:
             raw_req = self.ws.wait()
             if raw_req is None:
+                self.queue.put(None)
                 break
             self.queue.put(QueueMessage(raw_req, 'request'))
 
@@ -102,9 +103,10 @@ class WebSocketServer(SharedExtension, ProviderCollector):
                 ws, initial_context_data)
             queue = Queue()
             reader = spawn(Reader(ws, queue))
-            dispatch_func = partial(self.handle_websocket_request,
-                               socket_id,
-                               context_data)
+            dispatch_func = partial(
+                self.handle_websocket_request,
+                socket_id,
+                context_data)
             dispatcher = PoolDispatcher(queue, dispatch_func)
             try:
                 ws.send(self.serialize_event(
