@@ -68,6 +68,7 @@ class WebSocketServer(SharedExtension, ProviderCollector):
     def __init__(self):
         super(WebSocketServer, self).__init__()
         self.sockets = {}
+        self._context_middlewares = []
 
     def deserialize_ws_frame(self, payload):
         try:
@@ -95,10 +96,18 @@ class WebSocketServer(SharedExtension, ProviderCollector):
 
     def handle_request(self, request):
         context_data = self.wsgi_server.context_data_from_headers(request)
+        context_data['request_args'] = request.args
         return self.websocket_mainloop(context_data)
 
     def websocket_mainloop(self, initial_context_data):
         def handler(ws):
+            try:
+                for m in self._context_middlewares:
+                    initial_context_data.update(m(initial_context_data))
+            except Exception as e:
+                ws.send(self.serialize_for_ws({'error': 'Middleware Exception',
+                                               'data': str(e)}))
+                return
             socket_id, context_data = self.add_websocket(
                 ws, initial_context_data)
             queue = Queue()
@@ -180,14 +189,23 @@ class WebSocketServer(SharedExtension, ProviderCollector):
             if isinstance(provider, WebSocketHubProvider):
                 provider.cleanup_websocket(socket_id)
 
+    def register_middleware(self, middleware):
+        self._context_middlewares.append(middleware)
+
 
 class WebSocketHubProvider(DependencyProvider):
     hub = None
     server = WebSocketServer()
 
+    def __init__(self, middlewares):
+        super(WebSocketHubProvider, self).__init__()
+        self._middlewares = middlewares
+
     def setup(self):
         self.hub = WebSocketHub(self.server)
         self.server.register_provider(self)
+        for m in self._middlewares:
+            self.server.register_middleware(m)
 
     def stop(self):
         self.server.unregister_provider(self)
@@ -269,6 +287,15 @@ class WebSocketHub(object):
             return True
         return False
 
+    def register_middleware(self, middleware):
+        self.server.register_middleware(middleware)
+
+    def get_context(self, socket_id):
+        rv = self._server.sockets.get(socket_id)
+        if rv is not None:
+            return rv.data
+        return None
+
 
 class WebSocketRpc(Entrypoint):
     server = WebSocketServer()
@@ -293,5 +320,10 @@ class WebSocketRpc(Entrypoint):
         event.send(result, exc_info)
         return result, exc_info
 
+    @classmethod
+    def register_middleware(cls, middleware):
+        cls.server.register_middleware(middleware)
+
 
 rpc = WebSocketRpc.decorator
+register_middleware = WebSocketRpc.register_middleware
