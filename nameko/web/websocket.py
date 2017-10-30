@@ -281,9 +281,12 @@ class WebSocketHub(object):
         worked or `False` if not.
         """
         payload = self._server.serialize_event(event, data)
-        return self.send(socket_id, payload)
+        return self._send(socket_id, payload)
 
     def send(self, socket_id, data):
+        return self._send(socket_id, self._server.serialize_for_ws(data))
+
+    def _send(self, socket_id, data):
         rv = self._server.sockets.get(socket_id)
         if rv is not None:
             rv.socket.send(data)
